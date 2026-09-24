@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f855a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="食事きろく">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>食事きろく</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1 id="screenTitle">今日の記録</h1>
+</header>
+
+<main>
+  <!-- ===== 記録（1日） ===== -->
+  <section id="view-day" class="view active">
+    <div class="datebar">
+      <button class="icon-btn" id="prevDay" aria-label="前の日">‹</button>
+      <button class="date-label" id="dateLabel"></button>
+      <input type="date" id="datePicker" class="visually-hidden">
+      <button class="icon-btn" id="nextDay" aria-label="次の日">›</button>
+    </div>
+
+    <div class="card summary">
+      <div class="kcal-ring" id="kcalRing">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle cx="60" cy="60" r="52" class="ring-bg"/>
+          <circle cx="60" cy="60" r="52" class="ring-fg" id="ringFg"/>
+        </svg>
+        <div class="kcal-center">
+          <div class="kcal-num" id="kcalTotal">0</div>
+          <div class="kcal-sub" id="kcalTarget">/ 2000 kcal</div>
+        </div>
+      </div>
+      <div class="pfc" id="pfcBars"></div>
+    </div>
+
+    <div id="mealList"></div>
+
+    <div class="add-row">
+      <label class="btn primary big">
+        <input type="file" accept="image/*" capture="environment" id="cameraInput" hidden>
+        📷 撮影して記録
+      </label>
+      <label class="btn">
+        <input type="file" accept="image/*" id="galleryInput" hidden>
+        🖼 写真を選ぶ
+      </label>
+      <button class="btn" id="manualBtn">✏️ 手入力</button>
+    </div>
+  </section>
+
+  <!-- ===== 履歴 ===== -->
+  <section id="view-history" class="view">
+    <div class="seg" id="rangeSeg">
+      <button data-range="7" class="on">7日</button>
+      <button data-range="30">30日</button>
+    </div>
+    <div class="card">
+      <h2>摂取カロリー</h2>
+      <div id="kcalChart" class="chart"></div>
+    </div>
+    <div class="card">
+      <h2>期間の1日平均</h2>
+      <div id="avgTable"></div>
+    </div>
+    <div class="card">
+      <h2>体重</h2>
+      <div class="inline-form">
+        <input type="number" step="0.1" inputmode="decimal" id="weightInput" placeholder="今日の体重 (kg)">
+        <button class="btn primary" id="weightSave">記録</button>
+      </div>
+      <div id="weightChart" class="chart"></div>
+    </div>
+  </section>
+
+  <!-- ===== 設定 ===== -->
+  <section id="view-settings" class="view">
+    <div class="card">
+      <h2>使うAI</h2>
+      <div class="seg" id="providerSeg">
+        <button data-p="gemini">Gemini</button>
+        <button data-p="openai">OpenAI</button>
+        <button data-p="claude">Claude</button>
+      </div>
+      <label class="field">APIキー
+        <input type="password" id="apiKey" autocomplete="off" placeholder="ここに貼り付け">
+      </label>
+      <label class="field">モデル名
+        <input type="text" id="modelName" list="modelList" autocomplete="off">
+        <datalist id="modelList"></datalist>
+      </label>
+      <div class="row gap">
+        <button class="btn" id="fetchModels">モデル一覧を取得</button>
+        <button class="btn" id="testAi">接続テスト</button>
+      </div>
+      <p class="hint" id="providerHint"></p>
+    </div>
+
+    <div class="card">
+      <h2>1日の目標</h2>
+      <div class="grid2">
+        <label class="field">カロリー (kcal)<input type="number" id="tKcal" inputmode="numeric"></label>
+        <label class="field">たんぱく質 (g)<input type="number" id="tP" inputmode="numeric"></label>
+        <label class="field">脂質 (g)<input type="number" id="tF" inputmode="numeric"></label>
+        <label class="field">炭水化物 (g)<input type="number" id="tC" inputmode="numeric"></label>
+        <label class="field">塩分 (g)<input type="number" step="0.1" id="tSalt" inputmode="decimal"></label>
+      </div>
+      <details class="calc">
+        <summary>目安を計算する</summary>
+        <div class="grid2">
+          <label class="field">性別<select id="cSex"><option value="m">男性</option><option value="f">女性</option></select></label>
+          <label class="field">年齢<input type="number" id="cAge" value="45"></label>
+          <label class="field">身長 (cm)<input type="number" id="cHeight" value="170"></label>
+          <label class="field">体重 (kg)<input type="number" id="cWeight" value="65"></label>
+          <label class="field">活動量<select id="cAct">
+            <option value="1.5">低い（座り仕事中心）</option>
+            <option value="1.75" selected>ふつう</option>
+            <option value="2.0">高い</option></select></label>
+          <label class="field">目的<select id="cGoal">
+            <option value="-300">減量（ゆるやか）</option>
+            <option value="0">維持</option></select></label>
+        </div>
+        <button class="btn" id="calcBtn">計算して目標に反映</button>
+        <p class="hint">基礎代謝は国立健康・栄養研究所の式、PFCはエネルギー比 15:25:60 による概算です。</p>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>データ</h2>
+      <p class="hint">記録はこのスマホの中だけに保存されています。機種変更やブラウザのデータ削除に備えて、ときどき書き出してください。</p>
+      <div class="row gap wrap">
+        <button class="btn" id="exportJson">バックアップを書き出す</button>
+        <label class="btn"><input type="file" accept="application/json,.json" id="importJson" hidden>バックアップを読み込む</label>
+        <button class="btn" id="exportCsv">CSV（Excel用）</button>
+      </div>
+      <p class="hint" id="storageInfo"></p>
+      <button class="btn danger" id="wipeAll">すべての記録を削除</button>
+    </div>
+    <p class="hint center">食事きろく v1.0 ・ 表示される値はAIによる推定で、医療目的のものではありません。</p>
+  </section>
+</main>
+
+<nav class="tabbar">
+  <button data-view="day" class="on"><span>🍽</span>記録</button>
+  <button data-view="history"><span>📈</span>履歴</button>
+  <button data-view="settings"><span>⚙️</span>設定</button>
+</nav>
+
+<!-- ===== 編集シート ===== -->
+<div class="sheet" id="editor" hidden>
+  <div class="sheet-inner">
+    <div class="sheet-head">
+      <button class="link" id="edCancel">キャンセル</button>
+      <strong id="edTitle">食事を記録</strong>
+      <button class="link bold" id="edSave">保存</button>
+    </div>
+    <div class="sheet-body">
+      <img id="edPhoto" class="photo" alt="" hidden>
+      <div id="edStatus" class="status" hidden></div>
+
+      <div class="ai-hint" id="edAiBox" hidden>
+        <input type="text" id="edHint" placeholder="補足（例: ご飯は大盛り、マヨネーズあり）">
+        <button class="btn" id="edReanalyze">再解析</button>
+      </div>
+
+      <div class="grid2">
+        <label class="field">区分<select id="edType">
+          <option>朝食</option><option>昼食</option><option>夕食</option><option>間食</option></select></label>
+        <label class="field">時刻<input type="time" id="edTime"></label>
+      </div>
+      <label class="field">メニュー名<input type="text" id="edName" placeholder="例: 唐揚げ定食"></label>
+
+      <div class="scale-row">
+        <span>量をまとめて調整</span>
+        <button data-s="0.5">×0.5</button><button data-s="0.75">×0.75</button>
+        <button data-s="1.25">×1.25</button><button data-s="1.5">×1.5</button>
+      </div>
+
+      <div id="edItems"></div>
+      <button class="btn" id="edAddItem">＋ 品目を追加</button>
+
+      <div class="card totals" id="edTotals"></div>
+      <p class="hint" id="edNote"></p>
+      <button class="btn danger" id="edDelete" hidden>この記録を削除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
