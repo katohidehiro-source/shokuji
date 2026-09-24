@@ -129,7 +129,10 @@ main { padding: 0 16px; max-width: 640px; margin: 0 auto; }
   font-size: 16px; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; width: 100%; min-width: 0;
 }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 10px; }
+/* iPhone の日時入力が枠からはみ出すのを防ぐ */
+input[type=time], input[type=date] { -webkit-appearance: none; appearance: none; max-width: 100%; min-height: 42px; display: block; }
+input::-webkit-date-and-time-value { text-align: left; }
 .calc summary { cursor: pointer; color: var(--accent); font-size: 14px; margin-top: 6px; }
 .inline-form { display: flex; gap: 8px; margin-bottom: 8px; }
 .inline-form .btn { flex-shrink: 0; white-space: nowrap; }

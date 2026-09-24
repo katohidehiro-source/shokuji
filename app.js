@@ -176,8 +176,10 @@ async function httpJson(url, opts) {
   try { data = JSON.parse(text); } catch { /* keep text */ }
   if (!res.ok) {
     const msg = data?.error?.message || data?.error?.type || text.slice(0, 200);
-    const hints = { 400: 'リクエスト内容かモデル名を確認してください。', 401: 'APIキーが正しくありません。', 403: 'APIキーの権限を確認してください。', 404: 'モデル名が見つかりません。「モデル一覧を取得」で選び直してください。', 429: '利用回数の上限に達しました。少し待つか、プランを確認してください。' };
-    throw new Error(`AIエラー (${res.status}) ${hints[res.status] || ''}\n${msg}`);
+    const hints = { 400: 'リクエスト内容かモデル名を確認してください。', 401: 'APIキーが正しくありません。', 403: 'APIキーの権限を確認してください。', 404: 'モデル名が見つかりません。「モデル一覧を取得」で選び直してください。', 429: '利用回数の上限に達しました。少し待つか、プランを確認してください。', 500: 'AI側で一時的なエラーが起きました。少し待って再解析してください。', 503: 'AIが混み合っています（一時的）。少し待って再解析するか、設定でモデルを変えてください。', 529: 'AIが混み合っています（一時的）。少し待って再解析してください。' };
+    const err = new Error(`AIエラー (${res.status}) ${hints[res.status] || ''}\n${msg}`);
+    err.status = res.status;
+    throw err;
   }
   return data;
 }
@@ -227,12 +229,42 @@ function currentAi() {
   if (!key) throw new Error(`${PROVIDERS[p].name} のAPIキーが未設定です。「設定」タブで入力してください。`);
   return { p, key, model };
 }
-async function analyzePhoto(dataUrl, hint) {
+// 混雑などの一時的なエラーのときは自動で待って再試行し、それでもだめなら予備モデルに切り替える
+const RETRY_STATUS = [429, 500, 502, 503, 504, 529];
+const FALLBACK_MODELS = {
+  gemini: ['gemini-flash-lite-latest', 'gemini-2.5-flash'],
+  openai: [],
+  claude: [],
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function analyzePhoto(dataUrl, hint, onProgress = () => {}) {
   const { p, key, model } = currentAi();
   const b64 = dataUrl.split(',')[1];
   const prompt = PROMPT + (hint ? `\n\n利用者からの補足: ${hint}` : '');
-  const text = await AI[p]({ key, model, b64, prompt });
-  return { ...normalizeResult(extractJson(text)), provider: p, model };
+  const models = [model, ...FALLBACK_MODELS[p].filter(m => m !== model)];
+  const waits = [0, 2000, 5000];   // 同じモデルで最大3回
+  let lastErr;
+  for (let mi = 0; mi < models.length; mi++) {
+    const m = models[mi];
+    for (let ai = 0; ai < waits.length; ai++) {
+      if (waits[ai]) {
+        onProgress(`AIが混み合っています。${waits[ai] / 1000}秒待って再試行します…（${ai + 1}/${waits.length}）`);
+        await sleep(waits[ai]);
+      } else if (mi > 0) {
+        onProgress(`混雑のため予備のモデル（${m}）で解析しています…`);
+      }
+      try {
+        const text = await AI[p]({ key, model: m, b64, prompt });
+        return { ...normalizeResult(extractJson(text)), provider: p, model: m, usedFallback: mi > 0 };
+      } catch (e) {
+        lastErr = e;
+        if (e.status === 404 && mi > 0) break;           // 予備モデルが無ければ次へ
+        if (!RETRY_STATUS.includes(e.status)) throw e;   // キー間違いなどは即終了
+        if (e.status === 429 && ai >= 1) break;          // 回数上限は長く待っても無駄なので次のモデルへ
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function listModels() {
@@ -438,7 +470,7 @@ async function runAnalysis(hint = '') {
   btn.disabled = true; $('#edSave').disabled = true;
   setStatus(`<span class="spinner"></span>${esc(PROVIDERS[settings.provider].name)} で解析中…（数秒〜20秒ほど）`);
   try {
-    const r = await analyzePhoto(editingPhotoFull, hint);
+    const r = await analyzePhoto(editingPhotoFull, hint, msg => { if (editing) setStatus(`<span class="spinner"></span>${esc(msg)}`); });
     if (!editing) return;
     editing.items = r.items;
     editing.title = r.title;
@@ -448,7 +480,7 @@ async function runAnalysis(hint = '') {
     $('#edNote').textContent = r.note ? `AIメモ: ${r.note}` : '';
     renderItems();
     setStatus(r.items.length
-      ? `推定しました（確からしさ: ${esc(r.confidence || '—')}）。量や品目が違えば修正して保存してください。`
+      ? `推定しました（確からしさ: ${esc(r.confidence || '—')}${r.usedFallback ? `・予備モデル ${esc(r.model)} を使用` : ''}）。量や品目が違えば修正して保存してください。`
       : '食べ物を見つけられませんでした。補足を入れて再解析するか、手入力してください。', !r.items.length);
   } catch (e) {
     setStatus(esc(e.message).replace(/\n/g, '<br>'), true);

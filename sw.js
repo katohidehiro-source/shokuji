@@ -1,5 +1,5 @@
 // アプリ本体をキャッシュしてオフラインでも起動できるようにする（AIへの通信はキャッシュしない）
-const CACHE = 'shokuji-v1.0.0';
+const CACHE = 'shokuji-v1.1.0';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
