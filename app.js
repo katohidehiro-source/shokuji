@@ -170,7 +170,17 @@ function normalizeResult(j) {
 async function httpJson(url, opts) {
   let res;
   try { res = await fetch(url, opts); }
-  catch (e) { throw new Error('通信できませんでした。電波状況を確認してください。'); }
+  catch (e) {
+    const sig = opts && opts.signal;
+    if (sig && sig.aborted) {
+      const err = new Error(sig.reason === 'timeout' ? 'AIの応答がありませんでした（時間切れ）。' : '解析を中止しました。');
+      err.status = sig.reason === 'timeout' ? 'timeout' : 'abort';
+      throw err;
+    }
+    const err = new Error('通信できませんでした。電波状況を確認してください。');
+    err.status = 'network';
+    throw err;
+  }
   const text = await res.text();
   let data = null;
   try { data = JSON.parse(text); } catch { /* keep text */ }
@@ -185,33 +195,33 @@ async function httpJson(url, opts) {
 }
 
 const AI = {
-  async gemini({ key, model, b64, prompt }) {
+  async gemini({ key, model, b64, prompt, signal }) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
     const parts = [{ text: prompt }];
     if (b64) parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64 } });
     const data = await httpJson(url, {
-      method: 'POST',
+      method: 'POST', signal,
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }),
     });
     return (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
   },
-  async openai({ key, model, b64, prompt }) {
+  async openai({ key, model, b64, prompt, signal }) {
     const content = [{ type: 'text', text: prompt }];
     if (b64) content.push({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b64 } });
     const data = await httpJson('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
+      method: 'POST', signal,
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
       body: JSON.stringify({ model, messages: [{ role: 'user', content }], response_format: { type: 'json_object' } }),
     });
     return data.choices?.[0]?.message?.content || '';
   },
-  async claude({ key, model, b64, prompt }) {
+  async claude({ key, model, b64, prompt, signal }) {
     const content = [];
     if (b64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } });
     content.push({ type: 'text', text: prompt });
     const data = await httpJson('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
+      method: 'POST', signal,
       headers: {
         'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
@@ -230,14 +240,28 @@ function currentAi() {
   return { p, key, model };
 }
 // 混雑などの一時的なエラーのときは自動で待って再試行し、それでもだめなら予備モデルに切り替える
-const RETRY_STATUS = [429, 500, 502, 503, 504, 529];
+const RETRY_STATUS = [429, 500, 502, 503, 504, 529, 'timeout', 'network'];
+const REQUEST_TIMEOUT = 45000; // 1回の問い合わせの上限（ミリ秒）
 const FALLBACK_MODELS = {
   gemini: ['gemini-flash-lite-latest', 'gemini-2.5-flash'],
   openai: [],
   claude: [],
 };
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function analyzePhoto(dataUrl, hint, onProgress = () => {}) {
+function sleep(ms, signal) {
+  return new Promise((res, rej) => {
+    const t = setTimeout(res, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); const e = new Error('解析を中止しました。'); e.status = 'abort'; rej(e); }, { once: true });
+  });
+}
+// 外側の中止ボタンと時間切れの両方で止められる信号を作る
+function requestSignal(outer) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort('timeout'), REQUEST_TIMEOUT);
+  const onAbort = () => c.abort('abort');
+  if (outer) { if (outer.aborted) c.abort('abort'); else outer.addEventListener('abort', onAbort, { once: true }); }
+  return { signal: c.signal, done: () => { clearTimeout(t); outer?.removeEventListener('abort', onAbort); } };
+}
+async function analyzePhoto(dataUrl, hint, onProgress = () => {}, outerSignal = null) {
   const { p, key, model } = currentAi();
   const b64 = dataUrl.split(',')[1];
   const prompt = PROMPT + (hint ? `\n\n利用者からの補足: ${hint}` : '');
@@ -249,19 +273,21 @@ async function analyzePhoto(dataUrl, hint, onProgress = () => {}) {
     for (let ai = 0; ai < waits.length; ai++) {
       if (waits[ai]) {
         onProgress(`AIが混み合っています。${waits[ai] / 1000}秒待って再試行します…（${ai + 1}/${waits.length}）`);
-        await sleep(waits[ai]);
+        await sleep(waits[ai], outerSignal);
       } else if (mi > 0) {
         onProgress(`混雑のため予備のモデル（${m}）で解析しています…`);
       }
+      const rs = requestSignal(outerSignal);
       try {
-        const text = await AI[p]({ key, model: m, b64, prompt });
+        const text = await AI[p]({ key, model: m, b64, prompt, signal: rs.signal });
         return { ...normalizeResult(extractJson(text)), provider: p, model: m, usedFallback: mi > 0 };
       } catch (e) {
         lastErr = e;
+        if (e.status === 'abort') throw e;
         if (e.status === 404 && mi > 0) break;           // 予備モデルが無ければ次へ
         if (!RETRY_STATUS.includes(e.status)) throw e;   // キー間違いなどは即終了
         if (e.status === 429 && ai >= 1) break;          // 回数上限は長く待っても無駄なので次のモデルへ
-      }
+      } finally { rs.done(); }
     }
   }
   throw lastErr;
@@ -374,6 +400,7 @@ function openEditor(meal, { isNew = false } = {}) {
   document.body.style.overflow = 'hidden';
 }
 function closeEditor() {
+  if (analysisCtl) { analysisCtl.abort(); analysisCtl = null; }
   $('#editor').hidden = true;
   document.body.style.overflow = '';
   editing = null; editingPhotoFull = null;
@@ -464,14 +491,17 @@ $('#edDelete').addEventListener('click', async () => {
 });
 $('#edReanalyze').addEventListener('click', () => runAnalysis($('#edHint').value.trim()));
 
+let analysisCtl = null; // 解析中なら AbortController
 async function runAnalysis(hint = '') {
   if (!editingPhotoFull) return;
   const btn = $('#edReanalyze');
-  btn.disabled = true; $('#edSave').disabled = true;
+  if (analysisCtl) { analysisCtl.abort(); return; }   // 解析中に押したら中止
+  const ctl = analysisCtl = new AbortController();
+  btn.textContent = '中止'; $('#edSave').disabled = true;
   setStatus(`<span class="spinner"></span>${esc(PROVIDERS[settings.provider].name)} で解析中…（数秒〜20秒ほど）`);
   try {
-    const r = await analyzePhoto(editingPhotoFull, hint, msg => { if (editing) setStatus(`<span class="spinner"></span>${esc(msg)}`); });
-    if (!editing) return;
+    const r = await analyzePhoto(editingPhotoFull, hint, msg => { if (editing && !ctl.signal.aborted) setStatus(`<span class="spinner"></span>${esc(msg)}`); }, ctl.signal);
+    if (!editing || ctl.signal.aborted) return;
     editing.items = r.items;
     editing.title = r.title;
     editing.ai = { provider: r.provider, model: r.model, confidence: r.confidence };
@@ -483,9 +513,10 @@ async function runAnalysis(hint = '') {
       ? `推定しました（確からしさ: ${esc(r.confidence || '—')}${r.usedFallback ? `・予備モデル ${esc(r.model)} を使用` : ''}）。量や品目が違えば修正して保存してください。`
       : '食べ物を見つけられませんでした。補足を入れて再解析するか、手入力してください。', !r.items.length);
   } catch (e) {
-    setStatus(esc(e.message).replace(/\n/g, '<br>'), true);
+    if (editing) setStatus(esc(e.message).replace(/\n/g, '<br>') + '<br>「再解析」でもう一度試せます。', true);
   } finally {
-    btn.disabled = false; $('#edSave').disabled = false;
+    if (analysisCtl === ctl) analysisCtl = null;
+    btn.textContent = '再解析'; btn.disabled = false; $('#edSave').disabled = false;
   }
 }
 
